@@ -1,0 +1,8 @@
+AVD ID                   AVD Name                      API Level      Status         Serial
+medium_phone             Medium Phone                  android-36     Offline
+small_phone              Small Phone                   android-36.1   Offline
+smartview_phone          smartview_phone               android-36     Offline
+dynamiccolor_phone       Dynamic Colour Phone          android-36     Offline
+tabs_phone               tabs_phone                    android-36     Offline
+medium_tablet            Medium Tablet                 android-35     Offline
+
