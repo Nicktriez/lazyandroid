@@ -72,6 +72,11 @@ adb reports:
 | `offline` | adb sees it, but it is not answering |
 | `no permissions` | a Linux udev rules problem |
 
+Rows are coloured by state: green when the device can be targeted (`ready`, and
+`running` for a booted AVD), yellow while it is seen but not usable yet
+(`offline`, `booting`), red when the host has to fix something (`unauthorized`,
+`no permissions`).
+
 `I` and `R` target the list marked `●` in the pane title — the list you last
 tabbed to. On DEVICES that is the device under the cursor, passed to
 `--device=<serial>`; on AVDS it is the selected AVD, provided it is booted, and

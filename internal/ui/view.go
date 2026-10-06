@@ -159,11 +159,19 @@ func (m Model) emulatorRow(i, width int) string {
 	if idWidth < 8 {
 		idWidth = 8
 	}
-	line := marker + padRight(ansi.Truncate(e.ID, idWidth, "…"), idWidth) + right
-	if i == m.avdCursor {
-		return styleSel.Render(fit(line, width))
+	prefix := marker + padRight(ansi.Truncate(e.ID, idWidth, "…"), idWidth) + e.APILevel + "  "
+	return stateRow(prefix, status, i == m.avdCursor, width)
+}
+
+// stateRow renders one list line: the leading columns, then the state that
+// explains the row, coloured green / yellow / red by stateStyle. A selected row
+// keeps its highlight — the state colour is inherited under the selection's
+// background instead of replacing it.
+func stateRow(prefix, state string, selected bool, width int) string {
+	if !selected {
+		return fit(prefix+stateStyle(state).Render(state), width)
 	}
-	return fit(line, width)
+	return fit(styleSel.Render(prefix)+styleSel.Inherit(stateStyle(state)).Render(state), width)
 }
 
 // deviceRow is one line of the DEVICES list: the model, its serial (so two
@@ -187,11 +195,8 @@ func (m Model) deviceRow(i, width int) string {
 	if labelWidth < 8 {
 		labelWidth = 8
 	}
-	line := marker + padRight(ansi.Truncate(label, labelWidth, "…"), labelWidth) + state
-	if i == m.devCursor {
-		return styleSel.Render(fit(line, width))
-	}
-	return fit(line, width)
+	prefix := marker + padRight(ansi.Truncate(label, labelWidth, "…"), labelWidth)
+	return stateRow(prefix, state, i == m.devCursor, width)
 }
 
 // apkRow is one line of the APKS list: the path, then its size.
