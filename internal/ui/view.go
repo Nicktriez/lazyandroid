@@ -6,8 +6,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-
-	"github.com/Nicktriez/lazyandroid/internal/android"
 )
 
 // View renders the whole interface.
@@ -40,7 +38,7 @@ func (m Model) View() string {
 	rightWidth := m.width - leftWidth
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.emulatorPane(leftWidth, bodyHeight),
+		m.targetPane(leftWidth, bodyHeight),
 		m.detailPane(rightWidth, bodyHeight),
 	)
 	return header + "\n" + body + "\n" + footer
@@ -58,7 +56,7 @@ func (m Model) headerView() string {
 }
 
 func (m Model) footerView() string {
-	hints := "↑/↓ select · s start · x stop · r refresh · p sdk list · d describe · i env · ? help · q quit"
+	hints := "tab list · ↑/↓ select · I install · R run · s/x avd · r refresh · ? help · q quit"
 	switch {
 	case m.job != "":
 		hints = styleGood.Render("● ") + "running " + m.job + " · esc cancel · q quit"
@@ -66,33 +64,90 @@ func (m Model) footerView() string {
 		hints = styleBad.Render("✗ " + m.err.Error())
 	case m.status != "":
 		hints = styleDim.Render(m.status)
+	case !m.loaded:
+		hints = styleDim.Render("loading…")
 	}
 	return fit(hints, m.width)
 }
 
-func (m Model) emulatorPane(outerWidth, outerHeight int) string {
+// targetPane is the left pane: one cursor-driven list over the three things a
+// deployment needs — the devices to target, the AVDs that can be booted, and
+// the APKs that can be installed. `tab` cycles them.
+func (m Model) targetPane(outerWidth, outerHeight int) string {
 	w, h := paneContentWidth(outerWidth), paneContentHeight(outerHeight)
 	st := stylePane.Width(paneBoxWidth(outerWidth)).Height(paneBoxHeight(outerHeight))
 
-	rows := []string{
-		fit(styleTitle.Render("EMULATORS")+styleDim.Render(fmt.Sprintf("  (%d)", len(m.emulators))), w),
-	}
-	if len(m.emulators) == 0 {
-		rows = append(rows, styleDim.Render("no AVDs found"))
-	}
-	start, end := visibleRange(len(m.emulators), m.cursor, h-1)
-	for i := start; i < end; i++ {
-		rows = append(rows, m.emulatorRow(i, m.emulators[i], w))
+	rows := []string{m.modeTabs(w)}
+	switch m.mode {
+	case listEmulators:
+		rows = append(rows, m.listRows(w, h-1, len(m.emulators), m.avdCursor,
+			"no AVDs found — n creates one", m.emulatorRow)...)
+	case listAPKs:
+		rows = append(rows, m.listRows(w, h-1, len(m.apks), m.apkCursor,
+			"no APKs found — build the project, then r to rescan", m.apkRow)...)
+	default:
+		rows = append(rows, m.listRows(w, h-1, len(m.devices), m.devCursor,
+			m.noDeviceReason(), m.deviceRow)...)
 	}
 	for len(rows) < h {
 		rows = append(rows, "")
 	}
-	return st.Render(strings.Join(rows, "\n"))
+	return st.Render(strings.Join(rows[:h], "\n"))
 }
 
-func (m Model) emulatorRow(i int, e android.Emulator, width int) string {
+// modeTabs is the left pane's title: the three lists with their counts, the
+// active one highlighted, and the list install/run deploy to marked with a dot.
+// The mark follows the target even when the AVDS list is not the one on screen,
+// because the APKS list only picks an APK and hides the target otherwise.
+func (m Model) modeTabs(width int) string {
+	parts := make([]string, 0, 3)
+	for _, mode := range []listMode{listDevices, listEmulators, listAPKs} {
+		label := fmt.Sprintf("%s (%d)", mode, m.count(mode))
+		if mode == m.target {
+			label = "● " + label
+		}
+		switch {
+		case mode == m.mode:
+			parts = append(parts, styleTitle.Render(label))
+		case mode == m.target:
+			parts = append(parts, styleGood.Render(label))
+		default:
+			parts = append(parts, styleDim.Render(label))
+		}
+	}
+	return fit(strings.Join(parts, "  "), width)
+}
+
+func (m Model) count(mode listMode) int {
+	switch mode {
+	case listEmulators:
+		return len(m.emulators)
+	case listAPKs:
+		return len(m.apks)
+	}
+	return len(m.devices)
+}
+
+// listRows renders the visible window of a list, or the empty-state note when
+// it has nothing in it. The note is wrapped rather than truncated: it is the
+// only thing explaining why the list is empty.
+func (m Model) listRows(width, height, n, cursor int, empty string, row func(i, width int) string) []string {
+	if n == 0 {
+		return strings.Split(styleDim.Width(width).Render(empty), "\n")
+	}
+	start, end := visibleRange(n, cursor, height)
+	rows := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		rows = append(rows, row(i, width))
+	}
+	return rows
+}
+
+// emulatorRow is one line of the AVDS list.
+func (m Model) emulatorRow(i, width int) string {
+	e := m.emulators[i]
 	marker := "  "
-	if i == m.cursor {
+	if i == m.avdCursor {
 		marker = "▸ "
 	}
 	status := "offline"
@@ -104,11 +159,71 @@ func (m Model) emulatorRow(i int, e android.Emulator, width int) string {
 	if idWidth < 8 {
 		idWidth = 8
 	}
-	line := fit(marker+padRight(e.ID, idWidth)+right, width)
-	if i == m.cursor {
-		return styleSel.Render(line)
+	line := marker + padRight(ansi.Truncate(e.ID, idWidth, "…"), idWidth) + right
+	if i == m.avdCursor {
+		return styleSel.Render(fit(line, width))
 	}
-	return line
+	return fit(line, width)
+}
+
+// deviceRow is one line of the DEVICES list: the model, its serial (so two
+// phones of the same model can be told apart) and the adb state. The label is
+// what gets truncated — the state is the part that explains a refused install.
+func (m Model) deviceRow(i, width int) string {
+	d := m.devices[i]
+	marker := "  "
+	if i == m.devCursor {
+		marker = "▸ "
+	}
+	state := d.State
+	if d.Ready() {
+		state = "ready"
+	}
+	label := d.Label()
+	if label != d.Serial {
+		label += "  " + d.Serial
+	}
+	labelWidth := width - ansi.StringWidth(state) - ansi.StringWidth(marker)
+	if labelWidth < 8 {
+		labelWidth = 8
+	}
+	line := marker + padRight(ansi.Truncate(label, labelWidth, "…"), labelWidth) + state
+	if i == m.devCursor {
+		return styleSel.Render(fit(line, width))
+	}
+	return fit(line, width)
+}
+
+// apkRow is one line of the APKS list: the path, then its size.
+func (m Model) apkRow(i, width int) string {
+	a := m.apks[i]
+	marker := "  "
+	if i == m.apkCursor {
+		marker = "▸ "
+	}
+	size := humanSize(a.Size)
+	pathWidth := width - ansi.StringWidth(size) - ansi.StringWidth(marker)
+	if pathWidth < 8 {
+		pathWidth = 8
+	}
+	line := marker + padRight(ansi.Truncate(a.Path, pathWidth, "…"), pathWidth) + size
+	if i == m.apkCursor {
+		return styleSel.Render(fit(line, width))
+	}
+	return fit(line, width)
+}
+
+func humanSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
 }
 
 func (m Model) detailPane(outerWidth, outerHeight int) string {
@@ -170,10 +285,12 @@ func (m Model) outputView(width, height int) string {
 
 func (m Model) helpView() string {
 	bindings := [][2]string{
+		{"tab", "switch list: DEVICES / AVDS / APKS — the ● list is the target"},
 		{"↑/↓, k/j", "move selection"},
-		{"s", "start selected AVD"},
-		{"x", "stop selected AVD"},
-		{"r", "refresh AVDs and environment"},
+		{"I", "install the selected APK on the target device or booted AVD"},
+		{"R", "run: build, deploy & launch on the target device or booted AVD"},
+		{"s / x", "start / stop the selected AVD"},
+		{"r", "refresh devices, APKs, AVDs and environment"},
 		{"i", "refresh environment"},
 		{"p", "android sdk list --all"},
 		{"d", "android describe"},
@@ -187,7 +304,7 @@ func (m Model) helpView() string {
 	for _, kv := range bindings {
 		b.WriteString("  " + padRight(styleDim.Render(kv[0]), 18) + kv[1] + "\n")
 	}
-	b.WriteString("\n" + styleDim.Render("wraps the `android` CLI · `android help` lists the full command surface"))
+	b.WriteString("\n" + styleDim.Render("wraps the `android` CLI and adb · `android help` lists the full command surface"))
 	return stylePane.Padding(1, 2).Render(b.String())
 }
 
